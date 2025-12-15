@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XR Decorator Agent</title>
+    <style>
+        body { margin: 0; font-family: sans-serif; overflow: hidden; }
+        #info-panel {
+            position: absolute;
+            top: 20px; left: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            width: 300px;
+            z-index: 100;
+        }
+        input { width: 70%; padding: 8px; margin-right: 5px; }
+        button { padding: 8px 12px; cursor: pointer; }
+        #response-msg { margin-top: 10px; color: #333; font-weight: bold; min-height: 20px;}
+        canvas { display: block; width: 100vw; height: 100vh; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="info-panel">
+        <h3>XR Room Assistant</h3>
+        <p>Ask for furniture (e.g., "I want a chair")</p>
+        <div style="display:flex;">
+            <input type="text" id="prompt-input" placeholder="Type here..." onkeydown="if(event.key==='Enter') sendPrompt()">
+            <button onclick="sendPrompt()">Go</button>
+        </div>
+        <div id="response-msg"></div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+        // --- 1. Three.js Setup ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xeeeeee);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(2, 2, 5);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        document.body.appendChild(renderer.domElement);
+
+        const environment = new RoomEnvironment(renderer);
+        const pmremGenerator = new THREE.PMREMGenerator(renderer);
+        scene.environment = pmremGenerator.fromScene(environment).texture;
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 0, 0);
+        controls.update();
+
+        // Lighting
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 2);
+        hemiLight.position.set(0, 20, 0);
+        scene.add(hemiLight);
+
+        // Grid
+        const gridHelper = new THREE.GridHelper(10, 10);
+        scene.add(gridHelper);
+
+        let currentModel = null;
+        const loader = new GLTFLoader();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // --- 2. Prompt Logic ---
+        window.sendPrompt = async function() {
+            const input = document.getElementById('prompt-input');
+            const msgDiv = document.getElementById('response-msg');
+            const prompt = input.value;
+            
+            if(!prompt) return;
+
+            msgDiv.innerText = "Thinking...";
+            msgDiv.style.color = "blue";
+
+            try {
+                const res = await fetch('/prompt', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({prompt: prompt})
+                });
+                
+                const data = await res.json();
+                
+                if (data.fullId) {
+                    msgDiv.innerText = "Found! Loading model...";
+                    msgDiv.style.color = "green";
+                    loadModel(data.fullId);
+                } else {
+                    msgDiv.innerText = data.message;
+                    msgDiv.style.color = "red";
+                }
+
+            } catch (err) {
+                console.error(err);
+                msgDiv.innerText = "Server Error";
+                msgDiv.style.color = "red";
+            }
+        };
+
+        function loadModel(fullId) {
+    const url = `/model/${fullId}`;
+    
+    loader.load(url, function (gltf) {
+        if (currentModel) {
+            scene.remove(currentModel);
+        }
+        currentModel = gltf.scene;
+
+        // --- ROBUST GRAY SHADER ---
+        const grayMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x808080,    // 50% Gray
+            roughness: 0.5,
+            metalness: 0.1,
+            side: THREE.DoubleSide, // Fixes "inside-out" models
+        });
+
+        currentModel.traverse((child) => {
+            if (child.isMesh) {
+                // 1. Fix Missing Lighting Data (Normals)
+                // If the model doesn't have normals, light calculations fail (become black)
+                if (!child.geometry.attributes.normal) {
+                    child.geometry.computeVertexNormals();
+                }
+
+                // 2. Clear Vertex Colors
+                // If the mesh has embedded "black" vertex colors, it overrides our material
+                // We delete this attribute to ensure our gray color takes precedence
+                if (child.geometry.attributes.color) {
+                    child.geometry.deleteAttribute('color');
+                }
+
+                // 3. Apply Material
+                child.material = grayMaterial;
+            }
+        });
+        // -----------------------------
+
+        scene.add(currentModel);
+        console.log("Loaded:", fullId);
+
+    }, undefined, function (error) {
+        console.error(error);
+        document.getElementById('response-msg').innerText = "Error: GLB file not found.";
+    });
+}
+
+
+        // Handle Resize
+        window.onresize = function () {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        };
+    </script>
+</body>
+</html>
