@@ -16,4 +16,6 @@ then use the convert_select_categories noebook to convert/scale the collada mode
 run ollama with llama3.2:3b
 
 ## run
-python server.py
+```
+python server.py\
+```
